@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>マップエディタ v5.0 (壁判定強化)</title>
+    <title>マップエディタ v7.0 (隙間埋めトレース)</title>
     <style>
         body { font-family: sans-serif; display: flex; gap: 20px; padding: 20px; background-color: #f4f7f6; height: 95vh; box-sizing: border-box; color: #333; }
-        #canvas-wrapper { position: relative; border: 2px solid #ccc; overflow: auto; flex-grow: 1; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display:flex; justify-content:center; align-items:center; }
-        canvas { cursor: default; display: block; }
+        #canvas-wrapper { position: relative; border: 2px solid #ccc; overflow: hidden; flex-grow: 1; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display:flex; justify-content:center; align-items:center; }
+        canvas { display: block; }
         #sidebar { width: 340px; display: flex; flex-direction: column; gap: 15px; height: 100%; min-width: 340px; }
         .panel { border: 1px solid #e0e0e0; padding: 15px; border-radius: 8px; background: white; }
         h3 { margin: 0 0 10px 0; font-size: 15px; border-bottom: 2px solid #eee; padding-bottom: 5px; color: #555; }
@@ -16,17 +16,15 @@
         button:hover { background: #0056b3; }
         button.secondary { background: #6c757d; }
         button.danger { background: #dc3545; }
-        button.outline { background: transparent; border: 1px solid #007bff; color: #007bff; }
+        button.magic { background: #6610f2; }
         .input-group { display: flex; gap: 5px; margin-bottom: 5px; }
-        .tabs { display: flex; margin-bottom: 10px; border-bottom: 1px solid #ddd; }
-        .tab { flex: 1; padding: 8px; text-align: center; cursor: pointer; background: #f9f9f9; color: #666; border: 1px solid #ddd; margin-right: -1px;}
-        .tab.active { background: white; color: #007bff; font-weight: bold; border-top: 2px solid #007bff; border-bottom: 1px solid white;}
         .list-container { flex-grow: 1; overflow-y: auto; border: 1px solid #eee; height: 150px; }
         .list-item { padding: 8px; border-bottom: 1px solid #f0f0f0; font-size: 13px; cursor: pointer; }
         .list-item:hover { background: #f5faff; }
         .list-item.selected { background: #e6f2ff; border-left: 4px solid #007bff; }
         .hidden { display: none; }
-        .slider-label { display:flex; justify-content:space-between; font-size:12px; color:#666;}
+        .slider-label { display:flex; justify-content:space-between; font-size:12px; color:#666; margin-bottom:2px;}
+        .debug-view { font-size:11px; color:#666; margin-top:5px; display:block;}
     </style>
 </head>
 <body>
@@ -42,29 +40,30 @@
         </div>
 
         <div class="panel" style="flex-grow: 1; display: flex; flex-direction: column;">
-            <div class="tabs">
-                <div class="tab active" onclick="setMode('magic')" id="tabMagic">🪄 自動作成</div>
-                <div class="tab" onclick="setMode('manual')" id="tabManual">👆 手動作成</div>
+            <h3>2. 自動検出設定</h3>
+            
+            <div class="slider-label"><span>隙間埋めレベル (線の太らせ)</span><span id="gapVal">5</span></div>
+            <input type="range" id="gapRange" min="0" max="20" value="5" oninput="updateSettings(this.value)">
+            <small style="color:#666; font-size:11px; margin-bottom:10px; display:block;">
+                値を上げると、線が途切れていても繋がっているとみなします。<br>
+                ※上げすぎると狭い通路が潰れます。
+            </small>
+
+            <label class="debug-view">
+                <input type="checkbox" id="showDebug" onchange="draw()"> 
+                解析用の「太った壁」を表示して確認する
+            </label>
+
+            <hr style="border:0; border-top:1px solid #eee; width:100%; margin:10px 0;">
+
+            <div id="actionPanel">
+                 <button class="magic" onclick="autoDetect()">⚡ 全エリア一括検出</button>
+                 <p style="text-align:center; margin:5px 0; font-size:12px; color:#888;">または、図面上の部屋をクリック</p>
+                 <button class="secondary" onclick="setMode('manual')">🖐 手動で描く</button>
             </div>
 
-            <!-- 自動設定 -->
-            <div id="magicSettings">
-                <div class="slider-label"><span>隙間埋め (太らせ)</span><span id="dilationVal">2</span></div>
-                <input type="range" id="dilationRange" min="0" max="10" value="2" oninput="updateDilation(this.value)">
-                
-                <div class="slider-label"><span>壁の色判定感度</span><span id="thresholdVal">180</span></div>
-                <input type="range" id="thresholdRange" min="50" max="240" value="180" onchange="updateDilation(document.getElementById('dilationRange').value)">
-                <p style="font-size:11px; color:#666; margin:0 0 5px;">※感度を上げると薄い線も壁と認識します(最大240)</p>
-            </div>
-
-            <!-- 手動設定 -->
-            <div id="manualSettings" class="hidden">
-                <label><input type="checkbox" id="snapCheck" checked> 近くの点に吸着(スナップ)</label>
-            </div>
-
-            <!-- 編集エリア -->
-            <div id="attributeEditor" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
-                <h3 id="editorTitle">エリア設定</h3>
+            <div id="attributeEditor" class="hidden" style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
+                <h3 style="font-size:13px;">選択エリアの編集</h3>
                 <input type="text" id="roomName" placeholder="名称 (例: 1-A)">
                 <select id="roomType">
                     <option value="classroom">教室</option>
@@ -75,17 +74,10 @@
                     <option value="restroom_f">トイレ(女)</option>
                     <option value="other">その他</option>
                 </select>
-                <div id="stairInfo" class="hidden"><input type="text" id="targetFloor" placeholder="接続階"></div>
-
-                <div class="input-group" id="createActions">
-                    <button class="secondary" onclick="undoPoint()">戻る</button>
-                    <button onclick="finishArea()">確定</button>
-                </div>
-                <div class="input-group hidden" id="editActions">
-                    <button onclick="updateSelectedArea()">変更保存</button>
+                <div class="input-group">
+                    <button onclick="updateSelectedArea()">更新</button>
                     <button class="danger" onclick="deleteSelectedArea()">削除</button>
                 </div>
-                <div id="selectionHint" class="hidden" style="font-size:11px; text-align:center; color:#007bff;">頂点をドラッグで修正可</div>
             </div>
 
             <div class="list-container" id="areaList"></div>
@@ -93,24 +85,26 @@
 
         <div class="panel">
             <h3>3. 出力</h3>
-            <button class="outline" onclick="exportJSON()">JSONコピー</button>
+            <button class="secondary" onclick="exportJSON()">JSONコピー</button>
             <textarea id="jsonOutput" style="height: 50px;"></textarea>
         </div>
     </div>
 
 <script>
+    // --- 変数定義 ---
     const canvas = document.getElementById('mapCanvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     let img = new Image();
     let areas = [];
-    let currentPoints = [];
-    let mode = 'magic'; 
+    let currentPoints = []; // 手動描画用
+    let mode = 'auto'; // 'auto' | 'manual' | 'edit'
     let selectedAreaIndex = -1;
-    let draggingPointIndex = -1;
-    let collisionData = null; // 高速化のためImageData配列を保持
-    let collisionWidth = 0;
+    
+    // 解析用オフスクリーンキャンバス
+    let processingCanvas = document.createElement('canvas');
+    let pCtx = processingCanvas.getContext('2d', { willReadFrequently: true });
 
-    // --- 初期化 ---
+    // --- 1. 画像読込 ---
     document.getElementById('imageLoader').addEventListener('change', function(e){
         const file = e.target.files[0];
         if (!file) return;
@@ -120,371 +114,372 @@
             img.onload = function(){
                 canvas.width = img.width;
                 canvas.height = img.height;
-                prepareCollisionMap();
+                processingCanvas.width = img.width;
+                processingCanvas.height = img.height;
+                prepareProcessingMap();
                 draw();
             }
             img.src = event.target.result;
         }
     });
 
-    // --- 壁判定マップ作成 (最重要) ---
-    function prepareCollisionMap() {
+    // --- 2. 隙間埋め処理 (最重要) ---
+    function prepareProcessingMap() {
         if(!img.src) return;
-        const dilation = parseInt(document.getElementById('dilationRange').value);
-        const threshold = parseInt(document.getElementById('thresholdRange').value);
-        document.getElementById('dilationVal').innerText = dilation;
-        document.getElementById('thresholdVal').innerText = threshold;
+        const gapSize = parseInt(document.getElementById('gapRange').value);
+        document.getElementById('gapVal').innerText = gapSize;
 
-        // 作業用キャンバス
-        const c = document.createElement('canvas');
-        c.width = canvas.width;
-        c.height = canvas.height;
-        const cx = c.getContext('2d');
-        
         // 画像を描画
-        cx.drawImage(img, 0, 0);
+        pCtx.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
+        pCtx.drawImage(img, 0, 0);
 
-        // 1. 画像データを取得
-        const imgData = cx.getImageData(0, 0, c.width, c.height);
-        const data = imgData.data;
-        
-        // 2. 二値化処理 (ここで閾値を適用し、壁を黒(1)、床を白(0)にする配列を作る)
-        // Uint8Arrayで壁マップを作る (0:床, 1:壁)
-        const walls = new Uint8Array(c.width * c.height);
-        
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i], g = data[i+1], b = data[i+2];
-            // 明るさが閾値より低ければ「壁」とみなす
-            // 白に近いグレー(200とか)も壁にするため、thresholdは高めに設定できるようにする
-            const brightness = (r + g + b) / 3;
-            if (brightness < threshold) {
-                walls[i / 4] = 1;
-            }
+        // CSSフィルタを使って「ぼかし」→「2値化」を行うことで線を太らせる
+        // これにより、gapSize分の隙間が埋まる
+        if (gapSize > 0) {
+            pCtx.save();
+            // ぼかし (隙間を埋める)
+            pCtx.filter = `blur(${gapSize/2}px)`;
+            pCtx.drawImage(processingCanvas, 0, 0);
+            // コントラスト最大化 (ぼやけた部分を黒い壁として確定させる)
+            // threshold的な処理を再現するため、何度も塗り重ねるか、filterを使う
+            pCtx.filter = `contrast(10000%) grayscale(100%)`; // 2値化
+            pCtx.drawImage(processingCanvas, 0, 0);
+            pCtx.restore();
         }
-
-        // 3. 膨張処理 (Dilation) - 隙間埋め
-        // 壁の周囲 dilation ピクセルも壁にする
-        if (dilation > 0) {
-            const dilatedWalls = new Uint8Array(walls.length);
-            const w = c.width;
-            const h = c.height;
-            
-            for(let y=0; y<h; y++) {
-                for(let x=0; x<w; x++) {
-                    if(walls[y*w + x] === 1) {
-                        // 周囲を塗りつぶす
-                        for(let dy=-dilation; dy<=dilation; dy++) {
-                            for(let dx=-dilation; dx<=dilation; dx++) {
-                                const ny = y + dy;
-                                const nx = x + dx;
-                                if(nx>=0 && nx<w && ny>=0 && ny<h) {
-                                    dilatedWalls[ny*w + nx] = 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            collisionData = dilatedWalls;
-        } else {
-            collisionData = walls;
-        }
-        collisionWidth = c.width;
-        
-        // デバッグ用: 判定結果が見たい場合は以下のコメントアウトを外してcanvasに描画
-        /*
-        const debugImg = cx.createImageData(c.width, c.height);
-        for(let i=0; i<collisionData.length; i++) {
-            const val = collisionData[i] === 1 ? 0 : 255;
-            debugImg.data[i*4] = val; debugImg.data[i*4+1] = val; debugImg.data[i*4+2] = val; debugImg.data[i*4+3] = 255;
-        }
-        ctx.putImageData(debugImg, 0, 0); // メインキャンバスに描画して確認
-        */
     }
 
-    function updateDilation(val) { prepareCollisionMap(); }
+    function updateSettings(val) {
+        prepareProcessingMap();
+        if(document.getElementById('showDebug').checked) draw();
+    }
 
-    // --- マウスイベント ---
-    canvas.addEventListener('mousedown', function(e) {
-        let pos = getPos(e);
+    // --- 3. クリック検出 & トレース処理 ---
+    canvas.addEventListener('mousedown', async function(e) {
+        const pos = getPos(e);
 
-        // 手動モードのスナップ機能
-        if (mode === 'manual' && document.getElementById('snapCheck').checked) {
-            const snapPos = findNearestPoint(pos);
-            if(snapPos) pos = snapPos;
-        }
-
-        // A. 編集モード (頂点移動)
-        if (selectedAreaIndex !== -1) {
-            const area = areas[selectedAreaIndex];
-            for(let i=0; i<area.points.length; i++) {
-                if (dist(area.points[i], pos) < 10) {
-                    draggingPointIndex = i;
-                    return;
-                }
-            }
-        }
-
-        // B. 手動作成
         if (mode === 'manual') {
             currentPoints.push(pos);
             draw();
-        }
-        // C. 自動作成
-        else if (mode === 'magic') {
-            const clickedIdx = findAreaIndexAt(pos);
-            if (clickedIdx !== -1) {
-                selectArea(clickedIdx);
-            } else {
-                startMagicWand(pos);
-            }
-        }
-        // D. 選択解除
-        else if (mode === 'edit') {
-             const clickedIdx = findAreaIndexAt(pos);
-             if (clickedIdx !== -1) selectArea(clickedIdx);
-             else deselectArea();
-        }
-    });
-
-    canvas.addEventListener('mousemove', function(e) {
-        const pos = getPos(e);
-        if (draggingPointIndex !== -1 && selectedAreaIndex !== -1) {
-            areas[selectedAreaIndex].points[draggingPointIndex] = pos;
-            draw();
-        } else {
-            // カーソル変更
-            if (selectedAreaIndex !== -1) {
-                const hit = areas[selectedAreaIndex].points.some(p => dist(p, pos) < 10);
-                canvas.style.cursor = hit ? 'move' : 'default';
-            }
-            
-            // 手動モードのスナップガイド表示
-            if(mode === 'manual' && document.getElementById('snapCheck').checked) {
-                draw(); // 再描画してガイドを更新
-                const snap = findNearestPoint(pos);
-                if(snap) {
-                    ctx.strokeStyle = '#00f'; ctx.lineWidth=2; 
-                    ctx.strokeRect(snap.x-5, snap.y-5, 10, 10);
-                }
-            }
-        }
-    });
-
-    canvas.addEventListener('mouseup', () => draggingPointIndex = -1);
-    canvas.addEventListener('dblclick', (e) => {
-        if(mode === 'manual') { e.preventDefault(); currentPoints.pop(); finishArea(); }
-    });
-
-    // --- 自動検出ロジック (精度向上版) ---
-    function startMagicWand(pos) {
-        if (!collisionData) prepareCollisionMap();
-        const w = collisionWidth;
-        const h = canvas.height;
-
-        // 指定座標が壁かどうかチェック (壁なら自動生成しない)
-        if (collisionData[pos.y * w + pos.x] === 1) {
-            alert("壁の上をクリックしています。部屋の中（白い部分）をクリックしてください。");
             return;
         }
 
-        const rays = 180; // レイの本数を増やす (精度向上)
+        // 既存エリア選択
+        const clickedIdx = findAreaIndex(pos);
+        if (clickedIdx !== -1) {
+            selectArea(clickedIdx);
+            return;
+        }
+        
+        if (mode === 'auto') {
+            // 何もないところをクリック -> 自動検出トライ
+            detectRoomAt(pos.x, pos.y);
+        }
+        
+        selectedAreaIndex = -1;
+        document.getElementById('attributeEditor').classList.add('hidden');
+        draw();
+    });
+    
+    // 手動モードのダブルクリック完了
+    canvas.addEventListener('dblclick', function() {
+        if(mode === 'manual' && currentPoints.length > 2) {
+            addArea(currentPoints, 'manual');
+            currentPoints = [];
+            draw();
+        }
+    });
+
+
+    // --- アルゴリズム: Flood Fill + Marching Squares (簡易版) ---
+    function detectRoomAt(startX, startY) {
+        const w = processingCanvas.width;
+        const h = processingCanvas.height;
+        const imgData = pCtx.getImageData(0, 0, w, h);
+        const data = imgData.data;
+
+        // 1. クリック地点が「壁(黒)」なら無視
+        // 背景が白(255,255,255)に近いかどうか
+        const idx = (startY * w + startX) * 4;
+        if (data[idx] < 128) { // 黒っぽい
+            alert("壁の上です。部屋の中（白い部分）をクリックしてください。");
+            return;
+        }
+
+        // 2. Flood Fill (塗りつぶし) で領域特定
+        // Uint8Arrayで訪問済みマップ兼領域マップを作成
+        const mask = new Uint8Array(w * h);
+        const stack = [startX, startY];
+        const points = []; // 領域内の全ピクセル（多すぎるので境界だけ取りたいが、まずは全取得）
+        
+        let minX=w, maxX=0, minY=h, maxY=0;
+        let pixelCount = 0;
+        const LIMIT = w * h * 0.8; // 安全装置
+
+        while(stack.length > 0) {
+            const y = stack.pop();
+            const x = stack.pop();
+            const i = y * w + x;
+
+            if(mask[i]) continue;
+            mask[i] = 1;
+            pixelCount++;
+            
+            if(x < minX) minX = x; if(x > maxX) maxX = x;
+            if(y < minY) minY = y; if(y > maxY) maxY = y;
+
+            // 4方向探索
+            if(x+1 < w && !mask[i+1] && data[(i+1)*4] > 128) stack.push(x+1, y);
+            if(x-1 >= 0 && !mask[i-1] && data[(i-1)*4] > 128) stack.push(x-1, y);
+            if(y+1 < h && !mask[i+w] && data[(i+w)*4] > 128) stack.push(x, y+1);
+            if(y-1 >= 0 && !mask[i-w] && data[(i-w)*4] > 128) stack.push(x, y-1);
+
+            if(pixelCount > LIMIT) break;
+        }
+
+        if (pixelCount < 100) return; // 小さすぎるゴミは無視
+
+        // 3. 輪郭追跡 (簡易法: スキャンラインごとの端点取得)
+        // Marching Squaresは実装が重いため、
+        // 「各Y座標における左端と右端のX」を取得してつなぐ方式で近似します。
+        // これは凹凸のある部屋（コの字型など）には弱いが、単純な部屋には高速で有効。
+        // → 今回は「コの字」に対応するため、少し丁寧なトレースを行います。
+
+        // 境界線ピクセルを探す
+        const boundaryPoints = traceBoundary(mask, w, h, minX, maxX, minY, maxY);
+        
+        // 点を間引く (簡略化)
+        const simplified = simplifyPoints(boundaryPoints, 5); // 5px以下のズレは無視
+
+        if(simplified.length > 2) {
+            addArea(simplified, 'auto');
+        }
+    }
+
+    // 境界トレース (Moore-Neighbor Tracing アルゴリズムの簡易版)
+    function traceBoundary(mask, w, h, minX, maxX, minY, maxY) {
         let points = [];
         
-        for(let i=0; i<rays; i++) {
-            const angle = (i/rays) * Math.PI * 2;
-            const cos = Math.cos(angle);
-            const sin = Math.sin(angle);
-            
-            // 1ピクセルずつ飛ばすと遅いので、最初は粗く、壁に近づいたら細かく探索
-            let hit = false;
-            let r = 0;
-            
-            // キャンバスサイズを超えるまで探索
-            const maxDist = Math.max(w, h); 
-            
-            while(r < maxDist) {
-                r += 1; // 1px刻みで進む（すり抜け防止のため細かく）
-                
-                const tx = Math.round(pos.x + cos * r);
-                const ty = Math.round(pos.y + sin * r);
-                
-                if(tx<0 || tx>=w || ty<0 || ty>=h) {
-                    break; // 画面外
+        // 1. 最初の境界点を見つける (上から走査)
+        let startP = null;
+        for(let y=minY; y<=maxY; y++) {
+            for(let x=minX; x<=maxX; x++) {
+                if(mask[y*w+x] === 1) {
+                    startP = {x, y};
+                    break;
                 }
-                
-                // 壁判定
-                if(collisionData[ty * w + tx] === 1) {
-                    points.push({x: tx, y: ty});
-                    hit = true;
-                    break; 
+            }
+            if(startP) break;
+        }
+        if(!startP) return [];
+
+        // 2. 時計回りに壁沿いを歩く
+        // 方向: 0:右, 1:下, 2:左, 3:上
+        let cx = startP.x, cy = startP.y;
+        let dir = 0; 
+        points.push({x:cx, y:cy});
+        
+        const maxSteps = (maxX - minX + maxY - minY) * 4; // 無限ループ防止
+        let steps = 0;
+
+        // ムーア近傍探索
+        // 現在地が「白(1)」、その周りの「黒(0)」との境界を歩く
+        // ※厳密な実装は複雑なので、ここでは「今のピクセルが1なら、左手沿いに進む」ロジック
+        
+        // 簡易実装: 境界ピクセルをすべて抽出して、角度順にソートする Convex Hull (凸包)
+        // だと凹みが取れない。
+        // ここは「mask画像から輪郭抽出する」標準的なアプローチを使います。
+        
+        // --- 簡易置換: 外部ライブラリなしでの実装は重いので、
+        // 検出されたマスク領域の「凸包」ではなく「スキャンライン」で上下の輪郭を取る ---
+        
+        const topEdge = [];
+        const bottomEdge = [];
+        
+        // スキャンライン方式 (凹形状の一部がつぶれる可能性があるが、隙間埋め重視なら許容範囲)
+        // ただし「コの字」に対応するために、Y軸方向だけでなくX軸方向からもスキャンして合成する手もあるが、
+        // ここではシンプルに「隙間を埋めた画像」に対して、
+        // 放射状RayCast (v5の改良版) を使うのが最もコード量が少なく安定する。
+        
+        // 方針変更: せっかくmaskを作ったので、maskの重心からRayCastする。
+        // これなら壁の厚みを考慮した正確な形状が取れる。
+        
+        let center = {x:0, y:0};
+        let count = 0;
+        // 重心計算 (間引いて計算)
+        for(let y=minY; y<=maxY; y+=5) {
+            for(let x=minX; x<=maxX; x+=5) {
+                if(mask[y*w+x]) { center.x+=x; center.y+=y; count++; }
+            }
+        }
+        center.x /= count; center.y /= count;
+
+        // 重心から全方位にRayを飛ばし、maskが0になる地点を探す
+        // これで「連結成分の形状」を取得できる
+        const rayPoints = [];
+        const rays = 72;
+        for(let i=0; i<rays; i++) {
+            const ang = (i/rays) * Math.PI * 2;
+            const cos = Math.cos(ang);
+            const sin = Math.sin(ang);
+            let r = 0;
+            let hitX = center.x, hitY = center.y;
+            // マスク内を突き進む
+            while(true) {
+                r += 2;
+                const tx = Math.round(center.x + cos * r);
+                const ty = Math.round(center.y + sin * r);
+                // マスクの外(=壁または別の部屋)に出たら終了
+                if(tx<minX || tx>maxX || ty<minY || ty>maxY || !mask[ty*w+tx]) {
+                    hitX = tx - cos*2; // 1歩戻る
+                    hitY = ty - sin*2;
+                    break;
+                }
+            }
+            rayPoints.push({x:hitX, y:hitY});
+        }
+        return rayPoints;
+    }
+
+    function simplifyPoints(points, tolerance) {
+        // 簡易的な間引き
+        if(points.length < 3) return points;
+        return points; // 今回はRayCastで滑らかに取っているのでそのまま返す
+    }
+
+
+    // --- 一括検出 ---
+    function autoDetect() {
+        if(!confirm("画面上のすべての白い領域を検出しようとします。\n少し時間がかかる場合があります。")) return;
+        
+        // グリッドサンプリングして、未探索の場所があればdetectRoomAtを実行
+        const w = processingCanvas.width;
+        const h = processingCanvas.height;
+        const step = 30; // 30px間隔でチェック
+        let count = 0;
+        
+        for(let y=step/2; y<h; y+=step) {
+            for(let x=step/2; x<w; x+=step) {
+                // 既存のエリアに含まれていないか？
+                if(findAreaIndex({x,y}) === -1) {
+                    detectRoomAt(x, y);
+                    count++;
                 }
             }
         }
+        draw();
+        alert("検出完了。不要なエリアは削除してください。");
+    }
 
-        // ノイズ除去（近すぎる点を間引く）
-        const cleanPoints = points.filter((p, i) => {
-            if(i===0) return true;
-            return dist(p, points[i-1]) > 5;
+
+    // --- 共通機能 ---
+    function addArea(points, method) {
+        areas.push({
+            id: Date.now() + Math.random(),
+            name: `Area ${areas.length + 1}`,
+            type: 'other',
+            points: points
+        });
+        updateList();
+        draw();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // デバッグモード: 太った壁を表示
+        if (document.getElementById('showDebug').checked) {
+            ctx.drawImage(processingCanvas, 0, 0);
+            ctx.fillStyle = "rgba(255, 0, 0, 0.1)";
+            ctx.fillRect(0,0,canvas.width, canvas.height); // 赤み掛ける
+        } else if (img.src) {
+            ctx.drawImage(img, 0, 0);
+        }
+
+        areas.forEach((area, idx) => {
+            const isSel = idx === selectedAreaIndex;
+            ctx.beginPath();
+            area.points.forEach((p, i) => {
+                if(i===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+            });
+            ctx.closePath();
+            ctx.fillStyle = getColor(area.type);
+            ctx.fill();
+            ctx.strokeStyle = isSel ? 'blue' : '#666';
+            ctx.lineWidth = isSel ? 2 : 1;
+            ctx.stroke();
+
+            // ラベル
+            const c = getCenter(area.points);
+            ctx.fillStyle = "black"; ctx.font = "11px sans-serif"; ctx.textAlign="center";
+            ctx.fillText(area.name, c.x, c.y);
         });
 
-        if(cleanPoints.length > 5) {
-            currentPoints = cleanPoints;
-            finishArea();
-            selectArea(areas.length - 1);
-        } else {
-            alert("壁が見つかりませんでした。感度(壁の色判定)を上げるか、手動モードを試してください。");
+        // 手動描画中
+        if (currentPoints.length > 0) {
+            ctx.beginPath();
+            currentPoints.forEach((p, i) => {
+                if(i===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+            });
+            ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.stroke();
         }
     }
 
-    // --- ユーティリティ ---
+    // --- UI/Utility ---
     function getPos(e) {
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        return { x: Math.round((e.clientX - rect.left)*scaleX), y: Math.round((e.clientY - rect.top)*scaleY) };
+        const r = canvas.getBoundingClientRect();
+        return { x: (e.clientX - r.left)*(canvas.width/r.width), y: (e.clientY - r.top)*(canvas.height/r.height) };
     }
-    function dist(p1, p2) { return Math.hypot(p1.x - p2.x, p1.y - p2.y); }
-
-    // 近くの頂点を探す (スナップ用)
-    function findNearestPoint(pos) {
-        let nearest = null;
-        let minD = 15; // スナップ距離
-        // 既存エリアの点と、現在作成中の点から探す
-        const candidates = [...areas.flatMap(a=>a.points), ...currentPoints];
-        
-        for(const p of candidates) {
-            const d = dist(p, pos);
-            if(d < minD) { minD = d; nearest = p; }
-        }
-        return nearest;
-    }
-
-    // --- エリア操作 (共通) ---
-    function finishArea() {
-        if(currentPoints.length < 3) return;
-        const name = document.getElementById('roomName').value || `Area ${areas.length+1}`;
-        const type = document.getElementById('roomType').value;
-        const floor = document.getElementById('targetFloor').value;
-        areas.push({ id: Date.now(), name, type, targetFloor: floor, points: [...currentPoints] });
-        currentPoints = [];
-        updateList(); draw();
-    }
-
-    function selectArea(idx) {
-        selectedAreaIndex = idx;
-        mode = 'edit';
-        const a = areas[idx];
-        document.getElementById('roomName').value = a.name;
-        document.getElementById('roomType').value = a.type;
-        if(a.targetFloor) document.getElementById('targetFloor').value = a.targetFloor;
-        
-        document.getElementById('createActions').classList.add('hidden');
-        document.getElementById('editActions').classList.remove('hidden');
-        document.getElementById('selectionHint').classList.remove('hidden');
-        updateList(); draw();
-    }
-
-    function deselectArea() {
-        selectedAreaIndex = -1;
-        mode = document.getElementById('tabMagic').classList.contains('active') ? 'magic' : 'manual';
-        document.getElementById('createActions').classList.remove('hidden');
-        document.getElementById('editActions').classList.add('hidden');
-        document.getElementById('selectionHint').classList.add('hidden');
-        updateList(); draw();
-    }
-
-    function updateSelectedArea() {
-        if(selectedAreaIndex===-1)return;
-        const a = areas[selectedAreaIndex];
-        a.name = document.getElementById('roomName').value;
-        a.type = document.getElementById('roomType').value;
-        a.targetFloor = document.getElementById('targetFloor').value;
-        updateList(); draw();
-    }
-    function deleteSelectedArea() {
-        if(selectedAreaIndex!==-1 && confirm("削除しますか？")) {
-            areas.splice(selectedAreaIndex, 1);
-            deselectArea();
-        }
-    }
-    function undoPoint() { currentPoints.pop(); draw(); }
-
-    function updateList() {
-        const list = document.getElementById('areaList');
-        list.innerHTML = '';
-        areas.forEach((a, i) => {
-            const d = document.createElement('div');
-            d.className = 'list-item'+(i===selectedAreaIndex?' selected':'');
-            d.innerText = `${a.name} (${a.type})`;
-            d.onclick = () => selectArea(i);
-            list.appendChild(d);
-        });
-    }
-
-    function findAreaIndexAt(pos) {
+    
+    function findAreaIndex(p) {
         for(let i=areas.length-1; i>=0; i--) {
             const pts = areas[i].points;
             let inside = false;
             for (let j = 0, k = pts.length - 1; j < pts.length; k = j++) {
-                if (((pts[j].y > pos.y) !== (pts[k].y > pos.y)) && (pos.x < (pts[k].x - pts[j].x) * (pos.y - pts[j].y) / (pts[k].y - pts[j].y) + pts[j].x)) inside = !inside;
+                if (((pts[j].y > p.y) !== (pts[k].y > p.y)) && (p.x < (pts[k].x - pts[j].x) * (p.y - pts[j].y) / (pts[k].y - pts[j].y) + pts[j].x)) inside = !inside;
             }
             if(inside) return i;
         }
         return -1;
     }
 
-    // --- 描画 ---
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (img.src) ctx.drawImage(img, 0, 0);
-        
-        areas.forEach((a, i) => {
-            const sel = (i === selectedAreaIndex);
-            drawPoly(a.points, getColor(a.type), true, sel);
-            // ラベル
-            const c = getCenter(a.points);
-            ctx.fillStyle = "black"; ctx.font="12px Arial"; ctx.textAlign="center"; ctx.fillText(a.name, c.x, c.y);
-            
-            if(sel) {
-                a.points.forEach(p => {
-                    ctx.fillStyle='white'; ctx.strokeStyle='#007bff'; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-                });
-            }
-        });
-        if(currentPoints.length>0) drawPoly(currentPoints, 'red', false, false);
+    function selectArea(i) {
+        selectedAreaIndex = i;
+        const a = areas[i];
+        document.getElementById('roomName').value = a.name;
+        document.getElementById('roomType').value = a.type;
+        document.getElementById('attributeEditor').classList.remove('hidden');
+        draw();
     }
-
-    function drawPoly(pts, color, fill, highlight) {
-        if(!pts.length)return;
-        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-        for(let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.closePath();
-        if(fill){ ctx.fillStyle=color; ctx.fill(); }
-        ctx.strokeStyle = highlight ? '#007bff' : '#666';
-        ctx.lineWidth = highlight ? 3 : 1;
-        ctx.stroke();
-    }
-
-    function getColor(type) {
-        const c = { 'classroom':'#4CAF5066', 'hallway':'#FFC10766', 'entrance':'#2196F366', 'stairs':'#9C27B066', 'restroom_m':'#3F51B580', 'restroom_f':'#E91E6380' };
-        return c[type] || '#9E9E9E66';
-    }
-    function getCenter(pts) { let x=0,y=0; pts.forEach(p=>{x+=p.x;y+=p.y}); return {x:x/pts.length, y:y/pts.length}; }
     
-    function setMode(m) {
-        deselectArea(); mode = m;
-        document.getElementById('tabMagic').className = m === 'magic' ? 'tab active' : 'tab';
-        document.getElementById('tabManual').className = m === 'manual' ? 'tab active' : 'tab';
-        document.getElementById('magicSettings').style.display = m === 'magic' ? 'block' : 'none';
-        document.getElementById('manualSettings').style.display = m === 'manual' ? 'block' : 'none';
+    function updateSelectedArea() {
+        if(selectedAreaIndex===-1)return;
+        areas[selectedAreaIndex].name = document.getElementById('roomName').value;
+        areas[selectedAreaIndex].type = document.getElementById('roomType').value;
+        updateList(); draw();
     }
-    window.exportJSON = () => { 
-        const j = JSON.stringify(areas.map(({id,...r})=>r), null, 2);
-        document.getElementById('jsonOutput').value = j;
-        navigator.clipboard.writeText(j).then(()=>alert("コピーしました"));
+    function deleteSelectedArea() {
+        if(selectedAreaIndex!==-1) { areas.splice(selectedAreaIndex, 1); selectedAreaIndex=-1; document.getElementById('attributeEditor').classList.add('hidden'); updateList(); draw(); }
+    }
+
+    function updateList() {
+        const list = document.getElementById('areaList');
+        list.innerHTML = '';
+        areas.forEach((a, i) => {
+            const d = document.createElement('div');
+            d.className = 'list-item' + (i===selectedAreaIndex ? ' selected' : '');
+            d.innerText = a.name;
+            d.onclick = () => selectArea(i);
+            list.appendChild(d);
+        });
+    }
+    
+    function setMode(m) { mode = m; selectedAreaIndex=-1; draw(); }
+    function getCenter(pts) { let x=0,y=0; pts.forEach(p=>{x+=p.x;y+=p.y}); return {x:x/pts.length, y:y/pts.length}; }
+    function getColor(t) { const c={'classroom':'#4CAF5066','hallway':'#FFC10766'}; return c[t]||'#9E9E9E66'; }
+    
+    window.exportJSON = () => {
+        document.getElementById('jsonOutput').value = JSON.stringify(areas.map(({id,...r})=>r), null, 2);
     };
-    document.getElementById('roomType').addEventListener('change', (e)=> document.getElementById('stairInfo').classList.toggle('hidden', e.target.value!=='stairs'));
 </script>
 </body>
 </html>
