@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マップ座標エディタ v3.0 (自動トレース)</title>
+    <style>
+        body { font-family: "Helvetica Neue", Arial, sans-serif; display: flex; gap: 20px; padding: 20px; background-color: #f0f2f5; height: 95vh; box-sizing: border-box;}
+        #canvas-wrapper { position: relative; border: 2px solid #ccc; overflow: auto; flex-grow: 1; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display:flex; justify-content:center; align-items:center;}
+        canvas { cursor: crosshair; display: block; }
+        #sidebar { width: 340px; display: flex; flex-direction: column; gap: 10px; height: 100%; min-width: 340px; }
+        .controls { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        h3 { margin-top: 0; font-size: 15px; border-bottom: 2px solid #eee; padding-bottom: 5px; color: #333; }
+        
+        /* UI Elements */
+        input[type="text"], select, button, input[type="file"] { padding: 8px; width: 100%; box-sizing: border-box; margin-bottom: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;}
+        button { background-color: #007bff; color: white; cursor: pointer; border: none; font-weight: bold; transition: background 0.2s; }
+        button:hover { background-color: #0056b3; }
+        button.secondary { background-color: #6c757d; }
+        button.magic { background-color: #6610f2; color: white; } /* 魔法の杖用 */
+        button.danger { background-color: #dc3545; }
+        
+        .input-group { display: flex; gap: 5px; margin-bottom: 5px;}
+        .input-group button { width: auto; flex-grow: 1; }
+        
+        .mode-switch { display: flex; gap: 0; margin-bottom: 10px; border: 1px solid #007bff; border-radius: 4px; overflow: hidden;}
+        .mode-switch button { margin: 0; border-radius: 0; background: white; color: #007bff; border: none; border-right: 1px solid #007bff;}
+        .mode-switch button.active { background: #007bff; color: white; }
+        .mode-switch button:last-child { border-right: none; }
+
+        textarea { width: 100%; height: 120px; font-family: monospace; font-size: 11px; border: 1px solid #ccc; resize: vertical;}
+        .point-list { flex-grow: 1; overflow-y: auto; border: 1px solid #ddd; background: white; border-radius: 8px; padding: 5px;}
+        .point-item { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 6px; border-bottom: 1px solid #f0f0f0; }
+        .point-item:hover { background-color: #f8f9fa; }
+        
+        .hidden { display: none; }
+        small { color: #666; display: block; margin-bottom: 5px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+    <!-- キャンバスエリア -->
+    <div id="canvas-wrapper">
+        <canvas id="mapCanvas"></canvas>
+    </div>
+
+    <!-- 操作パネル -->
+    <div id="sidebar">
+        <div class="controls">
+            <h3>1. 画像読込</h3>
+            <input type="file" id="imageLoader" accept="image/*, .svg">
+        </div>
+
+        <div class="controls">
+            <h3>2. 作成モード</h3>
+            <div class="mode-switch">
+                <button id="modeManual" class="active" onclick="setMode('manual')">手動ポチポチ</button>
+                <button id="modeMagic" onclick="setMode('magic')">🪄 自動検出</button>
+            </div>
+            <small id="msgManual">クリックで点を追加、ダブルクリックで確定。</small>
+            <small id="msgMagic" class="hidden">部屋の内部をクリックすると、黒い枠線を自動認識してエリア化します。</small>
+
+            <label>属性:
+                <select id="roomType">
+                    <option value="classroom">教室</option>
+                    <option value="hallway">廊下</option>
+                    <option value="entrance">出入口</option>
+                    <option value="stairs">階段</option>
+                    <option value="restroom_m">トイレ(男)</option>
+                    <option value="restroom_f">トイレ(女)</option>
+                    <option value="other">その他</option>
+                </select>
+            </label>
+            <div id="stairInfo" class="hidden">
+                <input type="text" id="targetFloor" placeholder="接続階 (例: 2F)">
+            </div>
+            <input type="text" id="roomName" placeholder="名称 (例: 1-A)">
+
+            <div class="input-group" id="manualControls">
+                <button class="secondary" onclick="undoPoint()">1つ戻る</button>
+                <button onclick="manualFinish()">完了</button>
+            </div>
+        </div>
+
+        <div class="point-list" id="areaList"></div>
+
+        <div class="controls">
+            <h3>3. 出力</h3>
+            <div class="input-group">
+                <button onclick="exportJSON()">JSON生成</button>
+                <button class="danger" onclick="clearAll()">全削除</button>
+            </div>
+            <textarea id="jsonOutput"></textarea>
+        </div>
+    </div>
+
+<script>
+    // --- 設定・変数 ---
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }); // ピクセル操作用最適化
+    let img = new Image();
+    let areas = [];
+    let currentPoints = [];
+    let currentMode = 'manual'; // 'manual' or 'magic'
+    
+    // --- 1. 画像読み込み & 初期化 ---
+    document.getElementById('imageLoader').addEventListener('change', function(e){
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+
+        // SVGも画像として読み込む（ピクセル解析するため）
+        if (file.type.includes("svg")) {
+            reader.readAsDataURL(file); // SVGをDataURLとして読み込み、Imageとして描画
+        } else {
+            reader.readAsDataURL(file);
+        }
+
+        reader.onload = function(event){
+            img.onload = function(){
+                // キャンバスサイズを画像に合わせる
+                canvas.width = img.width;
+                canvas.height = img.height;
+                draw();
+            }
+            img.src = event.target.result;
+        }
+    });
+
+    // --- 2. モード切替・UI制御 ---
+    window.setMode = function(mode) {
+        currentMode = mode;
+        document.getElementById('modeManual').className = mode === 'manual' ? 'active' : '';
+        document.getElementById('modeMagic').className = mode === 'magic' ? 'active' : '';
+        
+        document.getElementById('msgManual').style.display = mode === 'manual' ? 'block' : 'none';
+        document.getElementById('msgMagic').style.display = mode === 'magic' ? 'block' : 'none';
+        document.getElementById('manualControls').style.display = mode === 'manual' ? 'flex' : 'none';
+        
+        currentPoints = []; // 切り替え時に作成中の点はリセット
+        draw();
+    }
+
+    document.getElementById('roomType').addEventListener('change', (e) => {
+        document.getElementById('stairInfo').style.display = e.target.value === 'stairs' ? 'block' : 'none';
+    });
+
+    // --- 3. イベントハンドラ (クリック処理) ---
+    canvas.addEventListener('mousedown', async function(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((e.clientY - rect.top) * scaleY);
+
+        if (currentMode === 'manual') {
+            // 手動モード：点を打つ
+            currentPoints.push({x, y});
+            draw();
+        } else if (currentMode === 'magic') {
+            // 自動モード：塗りつぶしアルゴリズム発動
+            detectAreaByFill(x, y);
+        }
+    });
+
+    canvas.addEventListener('dblclick', function(e) {
+        if(currentMode === 'manual') {
+            e.preventDefault();
+            currentPoints.pop(); // ダブルクリック時の余計な点を削除
+            saveArea();
+        }
+    });
+
+    // --- 4. 自動検出アルゴリズム (Marching Squares / Flood Fill 簡易版) ---
+    function detectAreaByFill(startX, startY) {
+        // キャンバスのピクセルデータを取得
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        const w = canvas.width;
+        const h = canvas.height;
+
+        // クリックした場所の色（背景色）を取得
+        const startIdx = (startY * w + startX) * 4;
+        const bgR = data[startIdx], bgG = data[startIdx+1], bgB = data[startIdx+2];
+
+        // 色が「壁（黒っぽい色）」に近いか判定する関数
+        function isWall(idx) {
+            // RGBがすべて暗い（閾値100以下）なら壁とみなす簡易判定
+            // ※点線や薄い線に対応するため、厳密な黒(0)でなくても反応させる
+            const r = data[idx], g = data[idx+1], b = data[idx+2];
+            return (r < 180 && g < 180 && b < 180); 
+        }
+
+        // BFS (幅優先探索) で領域を塗りつぶしシミュレーション
+        const visited = new Uint8Array(w * h); // 訪問済みフラグ
+        const stack = [startX, startY];
+        let minX=w, maxX=0, minY=h, maxY=0;
+        const areaPixels = []; // 領域内のピクセル座標群
+
+        // 安全装置: 処理が重くなりすぎないよう制限
+        let count = 0;
+        const limit = w * h * 0.8; 
+
+        while(stack.length > 0 && count < limit) {
+            const cy = stack.pop();
+            const cx = stack.pop();
+            const idx = (cy * w + cx);
+
+            if (visited[idx]) continue;
+            visited[idx] = 1;
+            count++;
+
+            // バウンディングボックス更新
+            if(cx < minX) minX = cx; if(cx > maxX) maxX = cx;
+            if(cy < minY) minY = cy; if(cy > maxY) maxY = cy;
+            
+            // 外周抽出のために保存（実際は全ピクセル保存は重いので、端点のみ探るのが効率的だが、今回は簡易実装）
+            
+            // 4方向探索
+            const neighbors = [[0,1], [0,-1], [1,0], [-1,0]];
+            for(let [dx, dy] of neighbors) {
+                const nx = cx + dx, ny = cy + dy;
+                if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                    const nIdx = (ny * w + nx);
+                    const pIdx = nIdx * 4;
+                    if (!visited[nIdx] && !isWall(pIdx)) {
+                         stack.push(nx, ny);
+                    }
+                }
+            }
+        }
+
+        // 境界線の抽出（マーチングスクエア簡易版: Convex Hullだと凹みが取れないので、スキャンライン法で輪郭を取る）
+        // ここでは「得られた領域の外接矩形内の壁ピクセル」を単純化して拾うアプローチを取ります。
+        
+        // 非常に簡易なアプローチ: 
+        // 1. 探索範囲(minX~maxX, minY~maxY)の少し外側をスキャンし、
+        //    「塗りつぶし領域」に隣接している「壁」ピクセルを収集する。
+        const contourPoints = [];
+        
+        // 上記BFSは重いため、実用的な「クリック地点から放射状に壁を探す」Ray casting法に変更
+        // (複雑な形状に対応するため、多角形近似を行います)
+        
+        const rays = 72; // 360度を何分割するか（多いほど滑らか）
+        const polygon = [];
+        
+        for(let i=0; i<rays; i++) {
+            const angle = (i / rays) * Math.PI * 2;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            
+            let dist = 0;
+            let hit = false;
+            // 最大半径まで飛ばす
+            for(let r=0; r<Math.max(w,h); r+=2) { // 2px刻みで高速化
+                const tx = Math.round(startX + cos * r);
+                const ty = Math.round(startY + sin * r);
+                
+                if(tx<0||tx>=w||ty<0||ty>=h) break; // 画面外
+                
+                const idx = (ty * w + tx) * 4;
+                if(isWall(idx)) {
+                    polygon.push({x: tx, y: ty});
+                    hit = true;
+                    break;
+                }
+            }
+        }
+
+        // 点が少なすぎる、または面積が小さすぎる場合は無視
+        if(polygon.length < 3) {
+            alert("壁で囲まれた領域を認識できませんでした。\n・線が途切れている\n・色が薄すぎる\n可能性があります。手動モードをお使いください。");
+            return;
+        }
+
+        // 検出された点群をエリアとして確定
+        // ※点群が多いので間引く処理を入れても良いが、JSONサイズが許すならそのまま
+        currentPoints = polygon;
+        saveArea();
+    }
+
+    // --- 5. データ保存・描画 ---
+    function saveArea() {
+        if (currentPoints.length < 3) return;
+        
+        const type = document.getElementById('roomType').value;
+        const name = document.getElementById('roomName').value || `Area_${areas.length + 1}`;
+        let extra = type === 'stairs' ? {targetFloor: document.getElementById('targetFloor').value} : {};
+        
+        areas.push({
+            id: Date.now(),
+            name: name,
+            type: type,
+            ...extra,
+            points: [...currentPoints]
+        });
+        
+        currentPoints = [];
+        // 次の入力のために名前欄をクリアしない（連番入力などを想定）
+        // document.getElementById('roomName').value = ''; 
+        
+        updateList();
+        draw();
+    }
+
+    function manualFinish() { saveArea(); }
+    function undoPoint() { currentPoints.pop(); draw(); }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (img.src) ctx.drawImage(img, 0, 0);
+
+        // 確定済みエリア
+        areas.forEach(area => {
+            drawPoly(area.points, getColor(area.type), true);
+            drawLabel(area);
+        });
+
+        // 作業中エリア
+        if (currentPoints.length > 0) {
+            drawPoly(currentPoints, 'red', currentMode === 'magic'); // magicモードなら閉じる
+            currentPoints.forEach(p => {
+                ctx.fillStyle = 'red'; ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+            });
+        }
+    }
+
+    function drawPoly(pts, color, fill) {
+        if(!pts.length) return;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for(let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        if(fill) {
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+        ctx.strokeStyle = fill ? '#333' : color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    function drawLabel(area) {
+        // 重心計算
+        let x=0, y=0;
+        area.points.forEach(p=>{x+=p.x; y+=p.y;});
+        const cx = x/area.points.length, cy = y/area.points.length;
+        
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        const text = area.name;
+        const w = ctx.measureText(text).width;
+        ctx.fillRect(cx - w/2 - 2, cy - 10, w+4, 14);
+        
+        ctx.fillStyle = "black";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(text, cx, cy);
+    }
+
+    function getColor(type) {
+        const map = {
+            'classroom': '#4CAF5066', 'hallway': '#FFC10766', 'entrance': '#2196F366', 
+            'stairs': '#9C27B066', 'restroom_m': '#3F51B580', 'restroom_f': '#E91E6380'
+        };
+        return map[type] || '#9E9E9E66';
+    }
+
+    // --- 6. リスト管理・出力 ---
+    function updateList() {
+        const list = document.getElementById('areaList');
+        list.innerHTML = '';
+        areas.forEach((a, i) => {
+            const d = document.createElement('div');
+            d.className = 'point-item';
+            d.innerHTML = `<b>${a.name}</b> <button class="danger" onclick="delArea(${i})">×</button>`;
+            list.appendChild(d);
+        });
+    }
+    window.delArea = (i) => { areas.splice(i,1); updateList(); draw(); };
+    window.clearAll = () => { if(confirm("全消去しますか？")){ areas=[]; draw(); updateList(); }};
+    window.exportJSON = () => { document.getElementById('jsonOutput').value = JSON.stringify(areas.map(({id,...r})=>r), null, 2); };
+
+</script>
+</body>
+</html>
